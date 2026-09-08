@@ -157,6 +157,8 @@ Normal book queries must exclude soft-deleted records.
 
 Use transactions when multiple database operations must succeed or fail atomically.
 
+Critical mutation operations should use transactions when the business operation and its related audit information must remain consistent.
+
 ---
 
 ## Query Rules
@@ -172,6 +174,14 @@ Do not:
 3. paginate afterward.
 
 Validate sorting fields before constructing Prisma queries.
+
+Support dynamic sorting by multiple fields when required by the documented requirements.
+
+A valid approach may use a format such as:
+
+`sort=title:asc,price:desc`
+
+Do not trust arbitrary field names or sort directions received from the client.
 
 ---
 
@@ -218,6 +228,62 @@ Validate file uploads by:
 
 Do not trust client-provided file metadata without validation.
 
+Do not expose sensitive internal information through API errors.
+
+---
+
+## Code Language and Comments
+
+Use English for:
+
+- class names;
+- method names;
+- function names;
+- variable names;
+- interfaces;
+- types;
+- DTOs;
+- filenames;
+- module names;
+- API routes;
+- database fields;
+- technical identifiers.
+
+Write source-code comments and explanatory code documentation in Spanish.
+
+Comments should explain intent, business rules, non-obvious behavior, or important technical decisions.
+
+Do not add comments that merely repeat what the code already says.
+
+Prefer comments for:
+
+- business rules;
+- complex validation;
+- transactions;
+- non-trivial queries;
+- security-related decisions;
+- architectural decisions;
+- behavior that may not be immediately obvious to another developer.
+
+Example:
+
+```ts
+/**
+ * Obtiene los libros aplicando filtros, paginación y ordenamiento
+ * directamente en la base de datos.
+ */
+async findAll(query: FindBooksQueryDto) {
+  // ...
+}
+```
+
+Avoid unnecessary comments such as:
+
+```ts
+// Asigna el título.
+book.title = dto.title;
+```
+
 ---
 
 ## Testing Rules
@@ -236,12 +302,15 @@ Prioritize coverage for:
 - soft delete;
 - filters;
 - pagination;
-- sorting;
-- validation.
+- multi-field sorting;
+- validation;
+- critical error cases.
 
 Target overall coverage is 80%.
 
 If the target cannot be achieved within the challenge time, document the remaining gaps rather than adding meaningless tests.
+
+Tests should verify behavior and business rules, not implementation details unnecessarily.
 
 ---
 
@@ -254,3 +323,184 @@ Backend:
 ```bash
 npm test
 npm run build
+```
+
+Frontend:
+
+```bash
+npm test
+npm run build
+```
+
+Run lint when configured.
+
+If a command fails:
+
+1. investigate the failure;
+2. fix issues introduced by the current task;
+3. report unrelated pre-existing failures separately.
+
+Do not claim a task is complete if the project does not build unless the blocking issue is explicitly documented.
+
+Do not hide failing tests.
+
+---
+
+## Documentation Rules
+
+Keep documentation aligned with implementation.
+
+Update documentation when:
+
+- architecture changes;
+- setup changes;
+- environment variables change;
+- endpoints change;
+- assumptions change;
+- limitations are discovered.
+
+Do not document functionality as implemented if it is not actually implemented.
+
+Keep Swagger/OpenAPI synchronized with the actual API behavior.
+
+Document important technical decisions and trade-offs when they affect the solution.
+
+---
+
+## Scope Control
+
+Follow the phases in:
+
+`docs/implementation-plan.md`
+
+Before implementing a phase:
+
+1. inspect existing code;
+2. identify files that need modification;
+3. identify assumptions;
+4. implement only the current phase.
+
+After implementing a phase:
+
+1. summarize changes;
+2. list modified files;
+3. run relevant verification commands;
+4. report test/build results;
+5. mention any deviation from the documented architecture;
+6. stop and wait for the next instruction.
+
+Do not continue automatically to the next phase.
+
+---
+
+## AI Working Behavior
+
+When receiving an implementation request:
+
+1. Read the relevant project documentation.
+2. Inspect the existing repository before modifying files.
+3. Briefly state the implementation approach.
+4. Make focused changes.
+5. Run verification commands.
+6. Review the resulting diff.
+7. Report:
+   - what was implemented;
+   - files changed;
+   - tests/build executed;
+   - unresolved issues;
+   - architecture deviations, if any.
+
+Do not assume missing requirements.
+
+If a requirement is ambiguous, prefer the simplest implementation consistent with the existing documentation and explicitly state the assumption.
+
+Do not silently redesign the project.
+
+Do not implement additional features merely because they may be useful.
+
+When a documented requirement conflicts with an implementation convenience, preserve the requirement and explain the trade-off.
+
+---
+
+## Git Rules
+
+Do not execute destructive Git operations unless explicitly requested.
+
+Do not:
+
+- force push;
+- reset hard;
+- delete branches;
+- rewrite history.
+
+Do not commit automatically unless explicitly requested.
+
+Do not push automatically unless explicitly requested.
+
+Before suggesting a commit:
+
+- ensure relevant tests/build checks have passed;
+- summarize the changes.
+
+Use Conventional Commit style when proposing commit messages.
+
+Examples:
+
+```text
+feat(auth): implement jwt authentication
+feat(books): add server-side pagination and filters
+test(books): add service unit tests
+docs: update architecture decisions
+chore: configure docker compose
+```
+
+---
+
+## File and Dependency Rules
+
+Do not modify files outside this repository.
+
+Do not install global dependencies unless explicitly requested.
+
+Prefer project-local dependencies.
+
+Do not introduce libraries that duplicate functionality already available in the selected stack.
+
+Before adding a new dependency, verify that it provides clear value for the current requirement.
+
+Keep generated files, build artifacts, secrets, and local uploads out of Git when appropriate.
+
+---
+
+## Priority Rule
+
+If there is tension between completeness and quality, prioritize:
+
+1. Correctness.
+2. Mandatory challenge requirements.
+3. Architecture quality.
+4. Testability.
+5. Documentation.
+6. Secondary features.
+7. Visual polish.
+
+Do not sacrifice core functionality or maintainability to implement optional refinements.
+
+The following challenge features are considered mandatory targets and should not be treated as optional by default:
+
+- authentication;
+- book CRUD;
+- server-side filtering;
+- server-side pagination;
+- multi-field sorting;
+- debounced search;
+- soft delete;
+- CSV export;
+- image upload;
+- error handling;
+- audit/logging;
+- Swagger/OpenAPI;
+- Docker Compose;
+- tests.
+
+If time prevents completing one of these, explicitly document what remains and how it would be implemented.
