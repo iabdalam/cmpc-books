@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+.npm-cache/
+backend/src/generated/prisma/
 
 # Environment
 .env

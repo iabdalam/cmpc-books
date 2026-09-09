@@ -1,0 +1,78 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String     @unique @db.Citext
+  passwordHash String
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+  auditLogs    AuditLog[]
+}
+
+// La migración habilita citext y exige nombres no vacíos con espacios normalizados.
+model Author {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.Citext
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  books     Book[]
+}
+
+model Publisher {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.Citext
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  books     Book[]
+}
+
+model Genre {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.Citext
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  books     Book[]
+}
+
+model Book {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title       String
+  price       Decimal   @db.Decimal(12, 2)
+  available   Boolean   @default(true)
+  imageUrl    String?
+  authorId    String    @db.Uuid
+  publisherId String    @db.Uuid
+  genreId     String    @db.Uuid
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+  deletedAt   DateTime? @db.Timestamptz(3)
+  author      Author    @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  publisher   Publisher @relation(fields: [publisherId], references: [id], onDelete: Restrict)
+  genre       Genre     @relation(fields: [genreId], references: [id], onDelete: Restrict)
+
+  @@index([title])
+  @@index([authorId])
+  @@index([publisherId])
+  @@index([genreId])
+  @@index([available])
+  @@index([deletedAt])
+}
+
+model AuditLog {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String?  @db.Uuid
+  action    String
+  entity    String
+  entityId  String
+  metadata  Json?    @db.JsonB
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
