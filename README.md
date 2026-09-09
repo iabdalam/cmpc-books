@@ -4,8 +4,8 @@ Full Stack technical challenge for a book inventory management application.
 
 ## Estado
 
-Fases 0 y 1: aplicaciones base independientes y persistencia del backend con
-PostgreSQL + Prisma. No hay autenticación, CRUD ni endpoints de datos maestros.
+Fases 0 a 2: aplicaciones base independientes, persistencia con PostgreSQL + Prisma
+y autenticación JWT del backend. No hay CRUD ni endpoints de datos maestros.
 
 ## Requisitos e instalación
 
@@ -24,7 +24,7 @@ En PowerShell, copiar el entorno con `Copy-Item .env.example .env`.
 `PORT` es opcional, vale 3000 por defecto y debe estar entre 1 y 65535.
 Los archivos `.env` están ignorados por Git; el ejemplo no contiene secretos.
 
-Antes de arrancar el backend, completar `DATABASE_URL` y preparar PostgreSQL como
+Antes de arrancar el backend, completar `DATABASE_URL` y `JWT_SECRET`, y preparar PostgreSQL como
 se explica a continuación. Luego ejecutar `npm run start:dev` desde `backend/`.
 El backend verifica la conexión al arrancar y libera Prisma al cerrar.
 
@@ -87,13 +87,55 @@ géneros. Usa upserts dentro de una transacción: repetirlo no duplica los regis
 ni cambia sus IDs, timestamps o contraseñas. Si el correo ya existe, su contraseña
 se conserva; cambiar `SEED_DEMO_PASSWORD` no restablece esa contraseña. Cambiar el
 correo crea otro usuario. No se crean libros ni registros de auditoría en el seed.
-El usuario demo aún no puede iniciar sesión: la autenticación corresponde a la Fase 2.
+El usuario demo puede iniciar sesión con el correo y la contraseña usados al crearlo.
+
+## Autenticación JWT (Fase 2)
+
+Configurar en `backend/.env`:
+
+- `JWT_SECRET`: secreto aleatorio de al menos 32 bytes, sin espacios exteriores.
+  Es obligatorio; `.env.example` lo deja vacío. Usar un generador criptográfico o
+  un gestor de contraseñas. Para esta validación se agregó un secreto aleatorio al
+  `.env` local sin modificar las credenciales existentes.
+- `JWT_EXPIRES_IN`: entero en segundos entre 1 y 86400; por defecto `900` (15 minutos).
+  No acepta formatos como `15m`. La aplicación rechaza configuración inválida al arrancar.
+
+`POST /api/auth/login` es público y recibe:
+
+```json
+{
+  "email": "demo@example.com",
+  "password": "CONTRASEÑA_LOCAL_DEL_USUARIO_DEMO"
+}
+```
+
+Devuelve HTTP 200 con `{ "accessToken": "...", "user": { "id": "...", "email": "..." } }`
+y `Cache-Control: no-store`. Email se normaliza mediante trim y minúsculas; la
+contraseña no se transforma y se limita a 72 bytes UTF-8 para evitar truncamiento
+de bcrypt. Un payload inválido devuelve 400; contraseña incorrecta o usuario
+inexistente devuelven el mismo 401 (`Invalid credentials`). Se ejecuta bcrypt
+también para correos inexistentes para reducir diferencias de tiempo.
+
+El JWT usa HS256, contiene `sub` (UUID del usuario), `iat` y `exp`; no incluye
+contraseñas, hashes ni datos privados. Passport valida firma, algoritmo y expiración.
+JwtStrategy exige un usuario existente y expone solo `{ id, email }` en `request.user`.
+No se modificaron el schema ni el seed para implementar autenticación.
+
+Los módulos con rutas protegidas deberán importar `AuthModule` y aplicar
+`@UseGuards(JwtAuthGuard)` y `@ApiBearerAuth()`. El cliente enviará
+`Authorization: Bearer <accessToken>`. Swagger ofrece el botón **Authorize**.
+Login, health y Swagger permanecen públicos. La ruta `/api/protected-probe` existe
+exclusivamente en tests para comprobar el guard y el contexto del usuario, incluso
+contra PostgreSQL; no se registra en la aplicación desplegada.
+
+No hay refresh tokens, roles, OAuth ni frontend de autenticación.
 
 ## API disponible
 
 - Salud: http://localhost:3000/api/health devuelve `{"status":"ok"}`.
 - Swagger UI: http://localhost:3000/api/docs
 - OpenAPI JSON: http://localhost:3000/api/docs-json
+- Login: `POST http://localhost:3000/api/auth/login`
 
 El endpoint de salud solo indica que la aplicación responde; no vuelve a consultar
 la base de datos por cada petición. La API usa el prefijo global `/api`, de acuerdo
@@ -123,8 +165,8 @@ npm run test:cov
 ```
 
 Backend usa Jest y pruebas HTTP de salud, Swagger y validación global, además de
-pruebas de configuración. Frontend usa Vitest y React Testing Library.
-La cobertura excluye los entrypoints de arranque; no hay lógica de negocio todavía.
+pruebas de configuración y autenticación con JWT y bcrypt reales. Frontend usa
+Vitest y React Testing Library. La cobertura excluye `src/main.ts` y el cliente generado.
 No se ha configurado un linter en esta fase.
 
 Los tests habituales del backend no requieren PostgreSQL: sustituyen Prisma en
@@ -142,6 +184,9 @@ Esta suite requiere una base de desarrollo: ejecuta el seed dos veces y conserva
 sus datos. Los demás registros de prueba se revierten mediante transacciones.
 Verifica unicidad, nombres normalizados, relaciones, claves foráneas, precio decimal
 y no negativo, timestamps, `deletedAt`, metadatos y hash del usuario demo.
+También comprueba el login del usuario demo existente y el acceso rechazado sin token
+y permitido con token válido. Requiere la configuración JWT y las credenciales del
+seed en `.env`; no modifica la contraseña del usuario demo.
 
 Para ejecutar el backend compilado usar `npm run start:prod` desde `backend/`.
 Para previsualizar el frontend compilado usar `npm run preview` desde `frontend/`.
@@ -154,6 +199,8 @@ Para previsualizar el frontend compilado usar `npm run preview` desde `frontend/
   de validación solo existe en el entorno de tests.
 - `backend/src/prisma/`: PrismaModule exporta PrismaService; los futuros módulos
   consumidores lo importarán explícitamente, sin una capa Repository adicional.
+- `backend/src/users/`: consultas de usuarios mediante Prisma para autenticación.
+- `backend/src/auth/`: login, DTOs, emisión JWT, estrategia Passport y guard reutilizable.
 - `backend/prisma/`: schema, migración inicial y seed de desarrollo.
 - `backend/prisma.config.ts`: configuración del CLI y carga de `.env`.
 - `backend/src/generated/prisma/`: cliente generado, ignorado por Git y por cobertura.
@@ -164,7 +211,7 @@ Para previsualizar el frontend compilado usar `npm run preview` desde `frontend/
 Se mantiene la arquitectura de monolito modular con aplicaciones separadas.
 Los módulos backend y las carpetas frontend por funcionalidad se agregarán al
 implementar cada fase. La comunicación HTTP se centralizará cuando sea necesaria.
-No se han añadido autenticación, lógica CRUD, filtros, CSV, imágenes ni auditoría
+No se han añadido lógica CRUD, filtros, CSV, imágenes ni auditoría
 funcional. El frontend sigue en Fase 0.
 
 ### Modelo de persistencia
@@ -187,7 +234,7 @@ funcional. El frontend sigue en Fase 0.
   prisma/schema.prisma --script` y se completó con `citext` y CHECK. Esas restricciones
   SQL no se representan completamente en Prisma; deben conservarse en migraciones futuras.
 - Prisma 7 genera CommonJS para conservar la configuración NestJS existente y usa
-  `@prisma/adapter-pg` para PostgreSQL. `bcryptjs` sirve únicamente al seed por ahora;
+  `@prisma/adapter-pg` para PostgreSQL. `bcryptjs` se comparte entre seed y autenticación;
   `dotenv` carga el entorno del CLI y `tsx` ejecuta el seed TypeScript.
 
 ```mermaid
@@ -214,3 +261,12 @@ del CLI (`deepmerge-ts` y `mysql2`, propagados a paquetes Prisma). Quedan pendie
 de actualización compatible del proveedor; no se forzaron cambios mayores ni se
 introdujo MySQL como base de datos. La integración también emite un aviso de
 deprecación de `pg` sobre consultas en curso; las pruebas pasan con la versión actual.
+
+### Verificación de Fase 2
+
+Build backend correcto; 80 tests habituales y 15 tests de integración aprobados.
+`npm run test:cov` reporta 100% de statements, branches, funciones y líneas del código
+incluido (excluye `src/main.ts` y Prisma Client generado). La validación HTTP contra
+PostgreSQL usa el usuario demo existente, confirma firma del JWT y verifica acceso
+sin/con token mediante una ruta registrada solo por los tests. Persisten los avisos
+transitivos de Prisma y la deprecación de `pg` descritos en Fase 1.

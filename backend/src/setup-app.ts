@@ -13,6 +13,7 @@ export function setupApp(app: INestApplication): void {
     .setTitle('CMPC Books API')
     .setDescription('API para la gestión del inventario de libros de CMPC Libros.')
     .setVersion('1.0.0')
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
     .build();
 
   SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));

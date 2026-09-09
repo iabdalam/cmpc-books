@@ -5,7 +5,19 @@ export function validateEnvironment(config: Record<string, unknown>) {
     throw new Error('PORT must be an integer between 1 and 65535');
   }
 
-  return { ...config, PORT: port, DATABASE_URL: validateDatabaseUrl(config.DATABASE_URL) };
+  return { ...config, PORT: port, DATABASE_URL: validateDatabaseUrl(config.DATABASE_URL), ...validateJwtConfig(config) };
+}
+
+export function validateJwtConfig(config: Record<string, unknown>) {
+  const secret = config.JWT_SECRET;
+  if (typeof secret !== 'string' || secret.trim() !== secret || Buffer.byteLength(secret, 'utf8') < 32) {
+    throw new Error('JWT_SECRET is required and must contain at least 32 bytes without surrounding whitespace');
+  }
+  const expiresIn = Number(config.JWT_EXPIRES_IN ?? 900);
+  if (!Number.isInteger(expiresIn) || expiresIn < 1 || expiresIn > 86400) {
+    throw new Error('JWT_EXPIRES_IN must be an integer between 1 and 86400 seconds');
+  }
+  return { JWT_SECRET: secret, JWT_EXPIRES_IN: expiresIn };
 }
 
 export function validateDatabaseUrl(value: unknown): string {

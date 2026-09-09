@@ -1,14 +1,15 @@
-import { validateDatabaseUrl, validateEnvironment } from '../src/config/environment';
+import { validateDatabaseUrl, validateEnvironment, validateJwtConfig } from '../src/config/environment';
 
 const DATABASE_URL = 'postgresql://localhost/books_test';
+const JWT_SECRET = process.env.JWT_SECRET;
 
 describe('Environment configuration', () => {
   it('defaults to port 3000', () => {
-    expect(validateEnvironment({ DATABASE_URL }).PORT).toBe(3000);
+    expect(validateEnvironment({ DATABASE_URL, JWT_SECRET }).PORT).toBe(3000);
   });
 
   it('parses the configured port', () => {
-    expect(validateEnvironment({ DATABASE_URL, PORT: '4000' }).PORT).toBe(4000);
+    expect(validateEnvironment({ DATABASE_URL, JWT_SECRET, PORT: '4000' }).PORT).toBe(4000);
   });
 
   it.each(['', 'abc', '1.5', '0', '-1', '65536'])(
@@ -16,6 +17,21 @@ describe('Environment configuration', () => {
       expect(() => validateEnvironment({ PORT })).toThrow('PORT must be an integer');
     },
   );
+});
+
+describe('JWT configuration', () => {
+  it('defaults to 900 seconds', () => {
+    expect(validateJwtConfig({ JWT_SECRET }).JWT_EXPIRES_IN).toBe(900);
+  });
+  it('parses a configured lifetime', () => {
+    expect(validateJwtConfig({ JWT_SECRET, JWT_EXPIRES_IN: '3600' }).JWT_EXPIRES_IN).toBe(3600);
+  });
+  it.each([undefined, '', 'short', ' '.repeat(32)])('rejects missing or weak secrets', (secret) => {
+    expect(() => validateJwtConfig({ JWT_SECRET: secret })).toThrow('JWT_SECRET is required');
+  });
+  it.each(['', 'abc', '15m', '0', '-1', '1.5', '86401'])('rejects invalid lifetime %s', (JWT_EXPIRES_IN) => {
+    expect(() => validateJwtConfig({ JWT_SECRET, JWT_EXPIRES_IN })).toThrow('JWT_EXPIRES_IN must');
+  });
 });
 
 describe('Database configuration', () => {
