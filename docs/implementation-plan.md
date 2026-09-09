@@ -1,5 +1,18 @@
 # Plan de Implementación
 
+## Estado de entrega
+
+El plan inferior conserva el alcance incremental original. Al cierre documental
+del 2026-09-09 están implementadas las Fases 0–14 y realizada la revisión de
+cobertura de Fase 15. Las Fases 16–17 se reflejan en el README final, los diagramas
+de arquitectura/modelo y la verificación de entrega. No se añadieron funcionalidades
+durante ese cierre. Las evoluciones pendientes se documentan en README y no se
+presentan como implementadas. No hay script de lint configurado.
+
+- [Ejecución, resultados de tests y limitaciones](../README.md)
+- [Arquitectura implementada](architecture.md)
+- [Modelo relacional real](data-model.md)
+
 ## 1. Objetivo
 
 Implementar la prueba técnica CMPC Books de forma incremental, priorizando:

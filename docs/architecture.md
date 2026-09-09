@@ -1,882 +1,206 @@
-# Arquitectura
+# Arquitectura implementada
 
-## 1. Visión general
+Este documento describe el estado de entrega de CMPC Books. Los requisitos están
+en [requirements.md](requirements.md), el recorrido por fases en
+[implementation-plan.md](implementation-plan.md) y la ejecución en el
+[README](../README.md). No propone cambios de contratos ni funcionalidades nuevas.
 
-La solución será implementada como una aplicación web Full Stack compuesta por:
+## Vista general
 
-- Frontend con React + TypeScript.
-- Backend con NestJS + TypeScript.
-- Base de datos relacional PostgreSQL.
-- Prisma ORM para acceso a datos.
-- Docker Compose para la ejecución local de la solución completa.
+```mermaid
+flowchart LR
+    Browser["Usuario / Navegador"]
+    subgraph Compose["Docker Compose · red app"]
+        Frontend["Frontend React + TypeScript<br/>Build Vite · Nginx :8080<br/>Host :5173 · rutas SPA"]
+        Backend["Backend NestJS :3000<br/>REST /api · JWT"]
+        Swagger["Swagger /api/docs<br/>OpenAPI /api/docs-json"]
+        Prisma["Prisma + adaptador pg<br/>Dentro del backend"]
+        Postgres[("PostgreSQL :5432<br/>Volumen postgres_data")]
+        Uploads[("/app/uploads<br/>Volumen backend_uploads")]
+        Migrate["migrate · servicio temporal<br/>prisma migrate deploy"]
+        Frontend -->|"/api · REST / Bearer JWT"| Backend
+        Backend --> Prisma
+        Prisma --> Postgres
+        Backend --- Swagger
+        Backend -->|"sharp · archivos WebP"| Uploads
+        Migrate -->|"Tras health de PostgreSQL"| Postgres
+    end
+    Browser -->|"HTTP :5173"| Frontend
+```
 
-Flujo general:
+Prisma y Swagger pertenecen al proceso backend: no son contenedores adicionales.
+Las imágenes se sirven a través de NestJS y del proxy `/api`; Nginx no expone
+directamente el volumen. La API también se publica en el host para evaluación.
+Puertos predeterminados: frontend 5173, backend 3000, PostgreSQL 5432, solo loopback.
+
+En desarrollo local, Vite sustituye a Nginx y reenvía `/api` al backend local.
+Ambos modos usan el mismo origen para el navegador: no se habilita CORS.
+Un futuro despliegue con orígenes separados necesitará configurar una allowlist;
+no es parte del despliegue actual.
+
+## Monolito modular y responsabilidades
+
+Frontend y backend son aplicaciones independientes, sin Nx/Turborepo. El alcance
+no justifica microservicios, CQRS, brokers ni capas adicionales de infraestructura.
 
 ```text
-React Frontend
-      |
-      | HTTP / REST / JWT
-      v
-NestJS Backend
-      |
-      | Prisma
-      v
-PostgreSQL
+Controller → Service → Prisma → PostgreSQL
 ```
 
----
+Controllers resuelven HTTP, DTOs, parámetros, identidad JWT y códigos de respuesta.
+Los servicios implementan reglas, verifican referencias y coordinan transacciones.
+Solo servicios acceden a Prisma. PrismaModule exporta PrismaService y gestiona
+conexión/desconexión. No hay Repository adicional: duplicaría una abstracción que
+Prisma ya ofrece sin aportar un beneficio concreto en este challenge.
 
-## 2. Objetivos arquitectónicos
+| Módulo | Responsabilidad |
+| --- | --- |
+| auth / users | Login, consulta de usuario, firma y validación JWT |
+| books | CRUD, consultas, CSV y ciclo de vida de imágenes |
+| authors / publishers / genres | Datos maestros de solo lectura |
+| audit | Escritura de AuditLog en la transacción de negocio |
+| prisma | Acceso PostgreSQL mediante Prisma y adaptador pg |
+| common | Filtro de excepciones, DTOs compartidos e interceptor de tiempo |
+| config | Validación de variables de entorno |
 
-La arquitectura prioriza:
+## Contratos HTTP y autenticación
 
-- Separación clara de responsabilidades.
-- Mantenibilidad.
-- Testabilidad.
-- Simplicidad acorde al alcance de una prueba técnica.
-- Aplicación práctica de principios SOLID.
-- Ejecución local sencilla.
-- Contratos de API explícitos.
-- Consultas ejecutadas del lado del servidor.
-- Seguridad por defecto.
-- Documentación clara de decisiones técnicas.
+El prefijo es `/api`; health está en `/api/health`. Swagger usa versión `1.0.0`
+y está en `/api/docs`. El [README](../README.md#contratos-principales-de-api)
+resume los endpoints; los DTOs y OpenAPI son la referencia detallada.
 
-Se evitará introducir complejidad innecesaria como:
+`POST /api/auth/login` valida el email y compara bcrypt con `User.passwordHash`.
+Devuelve `{ accessToken, user: { id, email } }`, nunca el hash. La respuesta 401
+es igual para usuario inexistente y contraseña incorrecta; se ejecuta bcrypt
+también para usuarios inexistentes. No se registran contraseñas ni tokens.
 
-- microservicios;
-- arquitectura orientada a eventos;
-- CQRS;
-- message brokers;
-- abstracciones excesivas.
+JWT usa HS256, `sub`, `iat`, `exp`; el secreto y la duración se validan desde entorno.
+Passport valida firma, algoritmo, expiración y existencia del usuario, y expone
+solo id/email en `request.user`. Los controladores de libros y maestros usan guard.
+Login, health, Swagger e imágenes de libros activos son públicos. No hay registro,
+roles, refresh tokens ni endpoint de auditoría.
 
-El alcance actual no justifica estas soluciones.
+ValidationPipe aplica transformación, whitelist y rechazo de campos extra.
+Los errores tienen `{ statusCode, message, error }` y conservan códigos HTTP
+400/401/404/409/413/500; los errores inesperados no revelan internals de Prisma.
+El interceptor agrega `X-Response-Time` hasta preparar la respuesta, sin envolver
+JSON ni alterar streaming. No mide el tiempo completo de transferencia.
 
----
+## Datos, consultas y transacciones
 
-## 3. Estructura del repositorio
+El [modelo relacional](data-model.md) documenta exactamente schema y migración.
+PostgreSQL normaliza autores, editoriales y géneros. Los servicios no crean
+maestros implícitamente. Prisma genera cliente CommonJS compatible con NestJS;
+`prisma.config.ts` configura el CLI y `@prisma/adapter-pg` la conexión runtime.
 
-El repositorio tendrá la siguiente estructura general:
+Listado, filtros, búsqueda, orden y paginación se ejecutan en PostgreSQL.
+`page` inicia en 1; `limit` predeterminado 20, máximo 100. Respuesta:
+`{ data, meta: { page, limit, total, totalPages } }`. Precio es una cadena decimal
+en respuesta; relaciones se proyectan a `{ id, name }`.
+
+`search` usa coincidencia literal case-insensitive en título, autor y editorial.
+Filtros: UUID de los tres maestros y disponibilidad. Multi-sort
+`title:asc,price:desc` solo admite title, price, available, createdAt, updatedAt e id,
+sin repeticiones y con asc/desc. Se agrega id como desempate si falta.
+No se construyen consultas confiando en campos arbitrarios del cliente.
+
+Las consultas normales exigen `deletedAt: null` en servicio. GET/PATCH/DELETE de
+un libro eliminado retornan 404; DELETE nunca borra físicamente el registro.
+Conteo y página comparten transacción **RepeatableRead**.
+
+CREATE/UPDATE/DELETE y su AuditLog comparten transacción **Serializable**: si falla
+auditoría, se revierte la mutación. Conflictos concurrentes retornan 409 para
+reintento del cliente. AuditLog guarda usuario JWT, acción, entidad Book, id,
+timestamp y nombres de campos afectados; no almacena valores sensibles ni archivos.
+Upload modifica imageUrl y utiliza el mismo mecanismo de actualización auditada.
+
+Auditoría de negocio y logging técnico son distintos. AuditLog es persistente y
+transaccional; Nest registra actividad operativa y Nginx accesos HTTP. No existe
+un sistema de logs estructurados, trazas o métricas centralizadas ni registro de
+todas las lecturas como auditoría. El filtro global no registra excepciones crudas.
+
+## CSV e imágenes
+
+CSV reutiliza búsqueda/filtros, sin sort ni paginación del listado. Exporta por ID
+en lotes de 500, con BOM UTF-8, CRLF y escapado de comillas; neutraliza texto que
+podría interpretarse como fórmula. No carga todo el inventario en memoria.
+Cada lote ve datos vigentes: no existe snapshot único durante la exportación.
+Una falla de transferencia interrumpe la conexión.
+
+Upload usa `POST /api/books/:id/image`, multipart campo `file`. Admite una imagen
+fija JPEG/PNG/WebP hasta 5 MiB y 20 millones de píxeles. sharp valida el contenido
+decodificado y el MIME, y recodifica WebP sin metadatos con nombre UUID.
+La ruta pública `/api/uploads/:filename` solo sirve imágenes de libros activos,
+sin listado de directorios ni rutas arbitrarias.
+
+Se eligió almacenamiento local persistente por simplicidad del challenge.
+Si falla la mutación se intenta retirar el archivo nuevo; al reemplazar se elimina
+el anterior sin referencias. PostgreSQL y filesystem no tienen transacción común:
+una caída o fallo de limpieza puede dejar archivos huérfanos. Soft delete conserva
+archivos y bloquea su acceso público. No hay purga automática.
+
+## Frontend
+
+React + TypeScript + Vite con estructura por funcionalidad:
 
 ```text
-/
-├── frontend/
-├── backend/
-├── docs/
-│   ├── requirements.md
-│   ├── architecture.md
-│   └── implementation-plan.md
-├── docker-compose.yml
-├── AGENTS.md
-└── README.md
+src/
+  app/           routing, layout, estilos
+  features/auth/ login, sesión, protección de rutas
+  features/books/ listado, formularios, detalle, eliminación, imágenes y API
+  shared/api/    HTTP centralizado y descarga de archivos
+  shared/components/
 ```
 
-Frontend y backend son aplicaciones independientes dentro del mismo repositorio.
-
-No se utilizará un framework de monorepo como Nx o Turborepo, ya que no es necesario para el alcance de esta prueba.
-
----
-
-## 4. Arquitectura del backend
-
-El backend utilizará NestJS organizado como un monolito modular.
-
-Módulos esperados:
-
-```text
-backend/src/
-├── auth/
-├── users/
-├── books/
-├── authors/
-├── publishers/
-├── genres/
-├── audit/
-├── prisma/
-├── common/
-└── config/
-```
-
-La estructura exacta podrá ajustarse durante la implementación si existe una justificación técnica.
-
-El flujo principal será:
-
-```text
-Controller
-    |
-    v
-Service
-    |
-    v
-Prisma
-    |
-    v
-PostgreSQL
-```
-
-### Controllers
-
-Los controladores serán responsables de:
-
-- entrada y salida HTTP;
-- integración con DTOs;
-- contexto del usuario autenticado;
-- códigos HTTP;
-- parámetros de ruta y query params.
-
-Los controladores no deben acceder directamente a Prisma.
-
-### Services
-
-Los servicios serán responsables de:
-
-- reglas de negocio;
-- lógica de aplicación;
-- coordinación de operaciones;
-- transacciones;
-- interacción con Prisma.
-
-No se agregará una capa Repository adicional de forma automática.
-
-Prisma ya cumple el rol de abstracción de acceso a datos para este proyecto.
-
-Solo se introducirá otra abstracción si aporta un beneficio concreto.
-
----
-
-## 5. Convenciones de API
-
-El backend utilizará el prefijo:
-
-```text
-/api
-```
-
-Ejemplos:
-
-```text
-POST   /api/auth/login
-GET    /api/books
-POST   /api/books
-GET    /api/books/:id
-PATCH  /api/books/:id
-DELETE /api/books/:id
-GET    /api/books/export
-```
-
-Swagger/OpenAPI estará disponible en:
-
-```text
-/api/docs
-```
-
-También existirá un endpoint de salud.
-
-Por ejemplo:
-
-```text
-GET /health
-```
-
-o:
-
-```text
-GET /api/health
-```
-
-La decisión final deberá quedar documentada y ser consistente.
-
----
-
-## 6. Respuestas de API
-
-Las respuestas deben mantener una estructura consistente.
-
-En endpoints paginados se debe retornar:
-
-- información;
-- metadatos de paginación.
-
-Ejemplo:
-
-```json
-{
-  "data": [],
-  "meta": {
-    "page": 1,
-    "limit": 10,
-    "total": 0,
-    "totalPages": 0
-  }
-}
-```
-
-Se podrán utilizar interceptores de NestJS para resolver preocupaciones transversales cuando aporten valor real.
-
----
-
-## 7. Autenticación
-
-La autenticación utilizará JWT.
-
-Flujo:
-
-```text
-Credenciales
-     |
-     v
-POST /api/auth/login
-     |
-     v
-Validación usuario/contraseña
-     |
-     v
-JWT
-     |
-     v
-Authorization: Bearer <token>
-```
-
-Las contraseñas:
-
-- nunca se almacenarán en texto plano;
-- serán almacenadas como hashes seguros.
-
-Para la prueba técnica se podrá crear un usuario demo mediante seed.
-
-El secreto JWT deberá provenir de variables de entorno.
-
-Los endpoints protegidos utilizarán Guards de NestJS.
-
----
-
-## 8. Modelo de datos
-
-Se utilizará PostgreSQL con Prisma ORM.
-
-Las principales entidades serán:
-
-- User
-- Book
-- Author
-- Publisher
-- Genre
-- AuditLog
-
-### User
-
-Campos principales:
-
-```text
-id
-email
-passwordHash
-createdAt
-updatedAt
-```
-
-### Author
-
-Campos principales:
-
-```text
-id
-name
-createdAt
-updatedAt
-```
-
-### Publisher
-
-Campos principales:
-
-```text
-id
-name
-createdAt
-updatedAt
-```
-
-### Genre
-
-Campos principales:
-
-```text
-id
-name
-createdAt
-updatedAt
-```
-
-### Book
-
-Campos principales:
-
-```text
-id
-title
-price
-available
-imageUrl
-authorId
-publisherId
-genreId
-createdAt
-updatedAt
-deletedAt
-```
-
-### AuditLog
-
-Campos principales:
-
-```text
-id
-userId
-action
-entity
-entityId
-metadata
-createdAt
-```
-
----
-
-## 9. Relaciones
-
-Las relaciones principales serán:
-
-```text
-Author      1 ---- N Book
-Publisher   1 ---- N Book
-Genre       1 ---- N Book
-User        1 ---- N AuditLog
-```
-
-Autor, editorial y género serán modelados como entidades separadas.
-
-Esto permite:
-
-- normalización;
-- reutilización;
-- filtrado eficiente;
-- integridad referencial;
-- evitar duplicación innecesaria.
-
-Las relaciones y claves foráneas se definirán mediante Prisma.
-
----
-
-## 10. Índices
-
-Se crearán índices asociados a los principales patrones de consulta.
-
-Candidatos:
-
-```text
-Book.title
-Book.authorId
-Book.publisherId
-Book.genreId
-Book.available
-Book.deletedAt
-User.email
-```
-
-Los índices deben responder a necesidades reales del sistema y no agregarse de forma arbitraria.
-
----
-
-## 11. Datos maestros
-
-La creación y edición de libros utilizará el modelo relacional normalizado.
-
-El frontend necesitará obtener:
-
-- autores;
-- editoriales;
-- géneros.
-
-Se podrán exponer endpoints simples de lectura como:
-
-```text
-GET /api/authors
-GET /api/publishers
-GET /api/genres
-```
-
-Inicialmente estos datos podrán ser cargados mediante seed.
-
-No se requiere implementar CRUD administrativo completo para estas entidades salvo que resulte necesario.
-
----
-
-## 12. Listado de libros
-
-El listado debe soportar:
-
-- paginación;
-- búsqueda;
-- filtro por género;
-- filtro por editorial;
-- filtro por autor;
-- filtro por disponibilidad;
-- ordenamiento dinámico por múltiples campos.
-
-Todas estas operaciones deben ejecutarse del lado del servidor.
-
-Ejemplo:
-
-```text
-GET /api/books?page=1&limit=10&available=true&sort=title:asc,price:desc
-```
-
-Los campos y direcciones de ordenamiento deben validarse antes de construir la consulta Prisma.
-
-Los libros eliminados lógicamente no deben aparecer.
-
----
-
-## 13. Búsqueda
-
-La búsqueda en tiempo real será iniciada por el frontend.
-
-Se utilizará debounce.
-
-Valor recomendado:
-
-```text
-400 ms
-```
-
-La búsqueda real se ejecutará en backend/PostgreSQL.
-
-Podrá considerar campos relevantes como:
-
-- título del libro;
-- autor;
-- editorial.
-
-El comportamiento finalmente implementado deberá quedar documentado.
-
----
-
-## 14. Eliminación lógica
-
-Los libros utilizarán eliminación lógica mediante:
-
-```text
-deletedAt
-```
-
-Al eliminar un libro:
-
-- no se eliminará físicamente de la base de datos;
-- se establecerá `deletedAt`.
-
-Las consultas normales deberán filtrar:
-
-```text
-deletedAt = null
-```
-
-Los libros eliminados no deben aparecer en:
-
-- listados;
-- detalle;
-- exportación CSV.
-
----
-
-## 15. Transacciones
-
-Se utilizarán transacciones Prisma cuando múltiples operaciones deban completarse de forma atómica.
-
-Un caso relevante será:
-
-```text
-Modificación del libro
-+
-Registro de auditoría
-```
-
-Ambas operaciones deberán completar correctamente o revertirse juntas cuando corresponda.
-
-La intención es demostrar uso real de transacciones, no agregarlas artificialmente.
-
----
-
-## 16. Auditoría y logging
-
-Se diferenciarán dos conceptos.
-
-### Logging técnico
-
-Permitirá registrar:
-
-- errores;
-- eventos técnicos relevantes;
-- comportamiento de la aplicación.
-
-### Auditoría
-
-Permitirá registrar operaciones de negocio relevantes.
-
-Por ejemplo:
-
-```text
-CREATE book
-UPDATE book
-DELETE book
-```
-
-La auditoría debe incluir cuando sea posible:
-
-- usuario;
-- acción;
-- entidad;
-- identificador de entidad;
-- fecha;
-- metadatos relevantes.
-
----
-
-## 17. Manejo de errores
-
-El backend debe manejar errores de forma consistente.
-
-No se deben exponer:
-
-- stack traces;
-- detalles internos de Prisma;
-- detalles internos de PostgreSQL;
-- secretos;
-- información técnica sensible.
-
-Los errores de validación deben entregar respuestas HTTP comprensibles.
-
-El frontend deberá mostrar mensajes útiles para el usuario.
-
----
-
-## 18. Interceptores
-
-Se utilizarán interceptores de NestJS cuando resuelvan preocupaciones transversales reales.
-
-Posibles usos:
-
-- estandarización de respuestas;
-- logging;
-- métricas;
-- comportamiento transversal.
-
-La paginación no debe perder sus metadatos debido a transformaciones de respuesta.
-
----
-
-## 19. Exportación CSV
-
-Se implementará:
-
-```text
-GET /api/books/export
-```
-
-El endpoint generará un archivo CSV.
-
-Debe utilizar:
-
-- Content-Type apropiado;
-- nombre de archivo de descarga apropiado;
-- codificación correcta.
-
-Los libros eliminados lógicamente no deben incluirse.
-
-Cuando sea posible, se reutilizará la lógica de filtros para evitar duplicación innecesaria.
-
----
-
-## 20. Carga de imágenes
-
-Cada libro podrá tener una imagen.
-
-Para esta prueba técnica se utilizará almacenamiento local del backend.
-
-Se validará:
-
-- tipo MIME;
-- tamaño máximo permitido;
-- nombre seguro de archivo.
-
-Las imágenes serán servidas desde una ruta controlada.
-
-Docker Compose deberá utilizar un volumen para preservar los archivos cargados.
-
-En un entorno productivo, esta implementación debería evolucionar hacia almacenamiento de objetos como:
-
-- Amazon S3;
-- Azure Blob Storage.
-
-Este trade-off deberá quedar documentado.
-
----
-
-## 21. Arquitectura del frontend
-
-El frontend utilizará:
-
-- React;
-- TypeScript;
-- Vite.
-
-Se utilizará una estructura orientada a funcionalidades.
-
-Ejemplo:
-
-```text
-frontend/src/
-├── app/
-├── features/
-│   ├── auth/
-│   └── books/
-├── components/
-├── services/
-├── hooks/
-├── types/
-└── utils/
-```
-
-La estructura podrá evolucionar según las necesidades concretas.
-
----
-
-## 22. Comunicación con backend
-
-La comunicación HTTP estará centralizada.
-
-Los componentes no deben duplicar configuración HTTP.
-
-Se debe manejar de forma consistente:
-
-- URL base;
-- token JWT;
-- errores;
-- cabeceras.
-
-La interfaz debe contemplar:
-
-- estado de carga;
-- estado vacío;
-- estado de error.
-
----
-
-## 23. Pantallas
-
-El frontend debe proporcionar al menos:
-
-- Login.
-- Listado de libros.
-- Creación de libro.
-- Edición de libro.
-- Detalle de libro.
-
-El listado incluirá:
-
-- filtros;
-- búsqueda;
-- paginación;
-- ordenamiento múltiple.
-
----
-
-## 24. Formularios
-
-Los formularios de creación y edición deben utilizar validación reactiva.
-
-Se priorizará una solución sencilla y mantenible.
-
-Las validaciones frontend mejoran la experiencia de usuario.
-
-Sin embargo, la validación del backend siempre será la autoridad final.
-
-Para imágenes se utilizará:
-
-```text
-multipart/form-data
-```
-
----
-
-## 25. Testing
-
-### Backend
-
-Se utilizará Jest.
-
-Se priorizarán pruebas sobre:
-
-- autenticación;
-- servicios;
-- controladores;
-- validaciones;
-- filtros;
-- búsqueda;
-- paginación;
-- ordenamiento múltiple;
-- eliminación lógica;
-- auditoría;
-- manejo de errores.
-
-### Frontend
-
-Se utilizará:
-
-- Vitest;
-- React Testing Library.
-
-Se priorizarán pruebas sobre:
-
-- componentes importantes;
-- formularios;
-- servicios;
-- interacciones;
-- estados de carga;
-- errores.
-
-La meta de cobertura es:
-
-```text
->= 80%
-```
-
-Se priorizarán pruebas significativas antes que pruebas creadas únicamente para aumentar la cobertura.
-
----
-
-## 26. Docker
-
-Docker Compose orquestará:
-
-```text
-frontend
-backend
-postgres
-```
-
-También deberá ser posible ejecutar frontend y backend localmente durante el desarrollo.
-
-Las variables de configuración deberán utilizar:
-
-```text
-.env
-.env.example
-```
-
-Se configurarán volúmenes para:
-
-- PostgreSQL;
-- imágenes cargadas.
-
----
-
-## 27. Documentación
-
-El README final deberá contener:
-
-- descripción del proyecto;
-- requisitos previos;
-- instalación;
-- configuración;
-- variables de entorno;
-- migraciones;
-- seed;
-- ejecución local;
-- ejecución mediante Docker Compose;
-- pruebas;
-- Swagger;
-- credenciales demo;
-- decisiones arquitectónicas;
-- trade-offs;
-- supuestos;
-- limitaciones conocidas.
-
-También deberán existir:
-
-- diagrama de arquitectura;
-- modelo relacional de base de datos.
-
----
-
-## 28. Seguridad
-
-La aplicación deberá:
-
-- hashear contraseñas;
-- utilizar JWT;
-- validar payloads;
-- validar archivos;
-- validar parámetros de ordenamiento;
-- evitar exposición de errores internos;
-- evitar secretos dentro del repositorio;
-- utilizar variables de entorno.
-
-CORS deberá restringirse al origen configurado para el frontend.
-
----
-
-## 29. Rendimiento
-
-Las siguientes operaciones se realizarán directamente en PostgreSQL mediante Prisma:
-
-- filtrado;
-- búsqueda;
-- ordenamiento;
-- paginación.
-
-No se cargarán todos los registros para posteriormente procesarlos en memoria.
-
-Se establecerá un límite máximo razonable para la paginación.
-
-Los índices deberán apoyar los principales patrones de consulta.
-
----
-
-## 30. Decisiones y trade-offs
-
-Se toman de manera intencional las siguientes decisiones:
-
-- Monolito modular en lugar de microservicios.
-- Prisma sin agregar por defecto una capa Repository adicional.
-- REST en lugar de GraphQL.
-- Almacenamiento local de imágenes para la prueba.
-- PostgreSQL como base relacional.
-- Frontend y backend independientes dentro de un mismo repositorio.
-- Sin framework de monorepo.
-
-Estas decisiones priorizan:
-
-- velocidad de implementación;
-- claridad;
-- mantenibilidad;
-- facilidad de evaluación;
-- coherencia con el alcance.
-
----
-
-## 31. Fuera de alcance
-
-Salvo que posteriormente se determine lo contrario, quedan fuera del alcance:
-
-- microservicios;
-- Kubernetes;
-- message brokers;
-- infraestructura cloud;
-- login social;
-- rotación avanzada de refresh tokens;
-- CRUD administrativo completo de autores;
-- CRUD administrativo completo de editoriales;
-- CRUD administrativo completo de géneros;
-- event sourcing;
-- CQRS.
-
-La arquitectura debe permitir evolución futura sin implementar anticipadamente estas complejidades.
+React hooks y un almacén pequeño con `useSyncExternalStore` cubren el estado
+necesario. No se agregó Redux ni una librería UI grande. La capa HTTP centraliza
+base URL, Bearer JWT y errores; no se duplican llamadas arbitrarias en componentes.
+
+La sesión persiste accessToken e id/email en localStorage, sin contraseña. Es una
+decisión pragmática: ante XSS el token es accesible. Si storage está bloqueado,
+la sesión puede vivir en memoria. Se controla expiración en cliente para UX;
+solo backend valida la firma. Un 401 limpia la sesión correspondiente y redirige
+a login, sin cerrar una sesión nueva por una respuesta tardía del token anterior.
+
+Rutas: `/login` y `/books`, `/books/new`, `/books/:id`, `/books/:id/edit` protegidas.
+Listado implementa debounce de 400 ms, filtros, multi-sort y paginación en servidor;
+la UI usa estados loading/error/empty. No sincroniza filtros con la URL.
+Los formularios comparten validación; backend sigue siendo autoritativo. Crear
+guarda primero el libro y sube la imagen después, comunicando éxito parcial y
+permitiendo reintentar imagen sin duplicar el libro. Eliminar pide confirmación.
+
+## Despliegue y configuración
+
+Compose usa una red bridge compartida. PostgreSQL tiene volumen `postgres_data`;
+backend monta `backend_uploads` en `/app/uploads`. Se conserva el nombre del
+volumen PostgreSQL previo. No se importan uploads del host automáticamente.
+
+Dockerfiles por etapas: build con Node 24, backend runtime con dependencias de
+ejecución y frontend estático servido por Nginx. Ambos runtimes usan usuarios sin
+root. El CLI Prisma y seed quedan en `migrate`, separado de la API. Su omisión
+en runtime evita instalar el peer opcional del CLI; los peers necesarios de Nest
+están declarados como dependencias del proyecto.
+
+Los `.dockerignore` excluyen `.env` y artefactos locales. Compose inyecta secretos
+al arrancar; no hay argumentos de build sensibles. El entrypoint crea la URL
+interna con variables PostgreSQL y codificación de componentes; la URL del host
+permanece disponible para desarrollo y tests. `.env.example` no contiene secretos.
+
+Orden de arranque: PostgreSQL saludable → migraciones exitosas → backend saludable
+→ frontend. Nginx resuelve rutas SPA, proxy `/api` y DNS de backend tras recreación.
+El seed es manual e idempotente, permitido solo con `NODE_ENV=development`.
+
+## Verificación y límites
+
+Jest prueba servicios, HTTP, JWT, validaciones, soft delete, consultas, CSV,
+imágenes y rollback. Hay integración PostgreSQL con fixtures transaccionales.
+Vitest/RTL prueba sesión, cliente HTTP, rutas y flujos de libros. La cobertura
+actual y comandos reproducibles están en el [README](../README.md#tests-y-cobertura).
+No hay lint configurado ni suite automatizada de navegador real.
+
+Evoluciones documentadas, no implementadas: cookies HttpOnly con protección CSRF,
+S3/Azure Blob y purga de archivos, snapshot consistente de CSV, observabilidad,
+rate limiting, backups automatizados, CI/CD, TLS y despliegue cloud. Los índices
+actuales no garantizan búsqueda substring eficiente a gran escala; una evolución
+requerirá mediciones y posibles índices especializados. Se conservan los límites
+del challenge sin anticipar microservicios, Kubernetes, roles o CRUD de maestros.
