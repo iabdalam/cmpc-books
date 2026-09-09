@@ -58,6 +58,7 @@ cp backend/.env.example backend/.env
 ```
 
 En PowerShell: `Copy-Item backend/.env.example backend/.env`.
+
 Editar ese archivo local y completar:
 
 | Variable | Configuración |
@@ -94,21 +95,61 @@ estar saludable antes de ejecutar `migrate`; este servicio aplica las migracione
 versionadas y termina con código 0. Después arranca backend y finalmente frontend.
 El estado `Exited (0)` de `migrate` es normal. El seed es explícito, no automático.
 
-### 3. Autenticarse
+### 3. Credenciales de acceso e inicio de sesión
 
-Abrir **http://localhost:5173/login**. Usar el valor de `SEED_DEMO_EMAIL` y la
-contraseña elegida en `SEED_DEMO_PASSWORD` al ejecutar por primera vez el seed.
-No existe una contraseña demo pública ni predeterminada.
+> **Importante:** el repositorio no incluye una contraseña demo predefinida.
+> La contraseña se define localmente mediante `SEED_DEMO_PASSWORD` antes de
+> ejecutar el seed y no se versiona en Git.
 
-El seed normaliza el email, guarda bcrypt con coste 12 y crea tres autores
-(Isabel Allende, Gabriel García Márquez, Julio Cortázar), dos editoriales
-(Sudamericana, Alfaguara) y tres géneros (Novela, Cuento, Ensayo).
+Para una instalación nueva, configurar en `backend/.env`:
+
+```env
+SEED_DEMO_EMAIL=demo@example.com
+SEED_DEMO_PASSWORD=LaPasswordLocalQueDeseeUsar
+```
+
+`SEED_DEMO_PASSWORD` debe tener al menos 12 caracteres y un máximo de 72 bytes UTF-8.
+
+Después de ejecutar el seed indicado en el paso anterior, abrir:
+
+**http://localhost:5173/login**
+
+e iniciar sesión con:
+
+| Campo | Valor |
+| --- | --- |
+| Email | Valor configurado en `SEED_DEMO_EMAIL` (`demo@example.com` por defecto) |
+| Contraseña | Valor configurado en `SEED_DEMO_PASSWORD` antes de ejecutar el seed |
+
+Por ejemplo, si para una instalación local se configura:
+
+```env
+SEED_DEMO_EMAIL=demo@example.com
+SEED_DEMO_PASSWORD=MiPasswordLocal123!
+```
+
+el acceso será:
+
+```text
+Email: demo@example.com
+Contraseña: MiPasswordLocal123!
+```
+
+La contraseña del ejemplo es únicamente ilustrativa. Cada evaluador puede definir
+su propia contraseña local antes de ejecutar el seed.
+
+El seed normaliza el email y almacena la contraseña mediante bcrypt con coste 12;
+la contraseña en texto plano no se persiste en PostgreSQL.
+
+Además crea tres autores (Isabel Allende, Gabriel García Márquez, Julio Cortázar),
+dos editoriales (Sudamericana, Alfaguara) y tres géneros (Novela, Cuento, Ensayo).
 No crea libros: el listado inicial vacío es correcto.
 
-El seed es idempotente: repetirlo conserva IDs, timestamps y hashes existentes.
-Cambiar `SEED_DEMO_PASSWORD` **no cambia** la contraseña de un usuario ya creado.
-En ese caso usar la contraseña original o configurar otro email para un nuevo
-usuario de desarrollo. No hay endpoint de registro ni de restablecimiento.
+El seed es idempotente. Si el usuario ya existe, volver a ejecutar el seed conserva
+su hash de contraseña. Por ello, cambiar posteriormente `SEED_DEMO_PASSWORD` en
+`.env` **no cambia la contraseña de un usuario ya creado**. En ese caso se debe
+utilizar la contraseña original o configurar otro email para crear un nuevo usuario
+de desarrollo. No existe endpoint de registro ni de restablecimiento de contraseña.
 
 ### URLs y operación
 
@@ -198,6 +239,7 @@ El usuario de migración necesita permiso para instalar `citext`.
 7. Cerrar sesión. Las páginas de libros requieren sesión; un 401 limpia la sesión.
 
 Rutas frontend: `/login`, `/books`, `/books/new`, `/books/:id`, `/books/:id/edit`.
+
 Los formularios evitan doble envío. Primero guardan el libro y luego su imagen;
 si falla la imagen, informan que el libro se guardó y permiten reintentar el upload.
 
@@ -221,9 +263,11 @@ Ejecutar login allí, copiar `accessToken` y pegar solo el token en **Authorize*
 | GET | `/api/authors`, `/api/publishers`, `/api/genres` | JWT; maestros alfabéticos, solo lectura |
 
 Login recibe `{ "email": "demo@example.com", "password": "VALOR_LOCAL_ELEGIDO" }`.
+
 Crear recibe título (1–255 caracteres tras trim), `price` numérico no negativo,
 máximo 9999999999.99 y dos decimales, `available` booleano y los tres UUID de maestros
 existentes. `imageUrl` opcional acepta URL HTTP(S) o null; el frontend utiliza upload.
+
 La respuesta Book incluye relaciones `{ id, name }`, timestamps y precio como
 **cadena decimal** de dos decimales, sin objetos internos de Prisma.
 
@@ -257,6 +301,7 @@ controlada con `nosniff` y `Cache-Control: no-store`.
 
 En Docker, `backend_uploads` monta `/app/uploads`; en local, `UPLOADS_DIR` vale
 `uploads`, relativo al directorio de ejecución (arrancar desde `backend/`).
+
 Ambos almacenamientos son distintos: imágenes previas en `backend/uploads` no se
 importan automáticamente al volumen Docker. Si se reutiliza esa base, copiar los
 archivos al volumen. Respaldar PostgreSQL e imágenes juntos.
@@ -276,6 +321,7 @@ npm run build
 
 Backend genera Prisma Client en `pretest` y `prebuild`. Si se ejecuta cobertura
 aisladamente en un checkout nuevo, ejecutar antes `npm run prisma:generate`.
+
 Los tests habituales no necesitan PostgreSQL. Para integración, con la base de
 desarrollo migrada, seed/configuración local y `NODE_ENV=development`, ejecutar
 desde backend `npm run test:db`. Estas pruebas conservan el seed y revierten los
