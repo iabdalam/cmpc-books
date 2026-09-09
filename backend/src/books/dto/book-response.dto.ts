@@ -14,7 +14,7 @@ export class BookResponseDto {
   @ApiProperty()
   available!: boolean;
 
-  @ApiProperty({ type: String, nullable: true, format: 'uri' })
+  @ApiProperty({ type: String, nullable: true, format: 'uri-reference', description: 'URL externa o ruta local /api/uploads/{filename}.' })
   imageUrl!: string | null;
 
   @ApiProperty({ format: 'date-time' })

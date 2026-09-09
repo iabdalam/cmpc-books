@@ -4,8 +4,9 @@ Full Stack technical challenge for a book inventory management application.
 
 ## Estado
 
-Fases 0 a 2: aplicaciones base independientes, persistencia con PostgreSQL + Prisma
-y autenticación JWT del backend. No hay CRUD ni endpoints de datos maestros.
+Backend implementado hasta la Fase 9: PostgreSQL + Prisma, JWT, CRUD de libros,
+datos maestros de lectura, listado avanzado, errores uniformes, auditoría atómica,
+CSV e imágenes locales. El frontend conserva únicamente la base de la Fase 0.
 
 ## Requisitos e instalación
 
@@ -211,8 +212,11 @@ Para previsualizar el frontend compilado usar `npm run preview` desde `frontend/
 Se mantiene la arquitectura de monolito modular con aplicaciones separadas.
 Los módulos backend y las carpetas frontend por funcionalidad se agregarán al
 implementar cada fase. La comunicación HTTP se centralizará cuando sea necesaria.
-No se han añadido lógica CRUD, filtros, CSV, imágenes ni auditoría
-funcional. El frontend sigue en Fase 0.
+`books` contiene las operaciones de libros y almacenamiento local de imágenes;
+`authors`, `publishers` y `genres` exponen datos maestros de lectura. `audit`
+registra las mutaciones utilizando la misma transacción Prisma del libro.
+`common` contiene el filtro global de errores y el interceptor de tiempo de respuesta.
+El frontend sigue en Fase 0.
 
 ### Modelo de persistencia
 
@@ -226,8 +230,8 @@ funcional. El frontend sigue en Fase 0.
 - `Book.price` usa `Decimal(12,2)` y CHECK de precio no negativo; no se define moneda.
 - Cada libro requiere un autor, una editorial y un género, con claves foráneas
   `RESTRICT` para preservar referencias. Los seis índices de Book pedidos están creados.
-- `deletedAt` es nullable. Solo se prepara el campo; las futuras consultas de negocio
-  deberán añadir `deletedAt: null`, y la eliminación lógica se implementará en Fase 3.
+- `deletedAt` es nullable. Consultas normales, listado, exportación y acceso a
+  imágenes exigen `deletedAt: null`; DELETE conserva físicamente el libro.
 - `AuditLog.userId` es opcional y usa `SET NULL` para preservar historial. `entityId`
   es texto para admitir distintos tipos de entidad y `metadata` es JSONB opcional.
 - La migración se generó con `prisma migrate diff --from-empty --to-schema
@@ -247,7 +251,7 @@ erDiagram
 
 Se usa un override acotado de Multer 2.3.0 para corregir vulnerabilidades de la
 dependencia transitiva fijada por NestJS 11.2.3. Retirarlo cuando NestJS incorpore
-la versión corregida. Esto no implementa carga de archivos. Vitest usa la rama 4
+la versión corregida. Multer procesa las imágenes multipart. Vitest usa la rama 4
 con las correcciones de seguridad a partir de 4.1.11.
 
 ### Verificación de Fase 1 y limitaciones
@@ -270,3 +274,93 @@ incluido (excluye `src/main.ts` y Prisma Client generado). La validación HTTP c
 PostgreSQL usa el usuario demo existente, confirma firma del JWT y verifica acceso
 sin/con token mediante una ruta registrada solo por los tests. Persisten los avisos
 transitivos de Prisma y la deprecación de `pg` descritos en Fase 1.
+
+## Backend: Fases 3 a 9
+
+Todas las operaciones de libros y datos maestros requieren Bearer JWT. Swagger
+permanece en `/api/docs`, con contratos de errores y archivos.
+
+| Método | Ruta | Resultado |
+| --- | --- | --- |
+| POST | /api/books | Crear libro (201) |
+| GET | /api/books/:id | Libro activo con autor, editorial y género |
+| PATCH | /api/books/:id | Actualización parcial |
+| DELETE | /api/books/:id | Soft delete (204; inexistente/eliminado: 404) |
+| GET | /api/books | Listado filtrado y paginado |
+| GET | /api/books/export | CSV de libros activos filtrados |
+| POST | /api/books/:id/image | Reemplazar imagen multipart, campo `file` (200) |
+| GET | /api/uploads/:filename | Imagen pública de un libro activo |
+| GET | /api/authors, /api/publishers, /api/genres | Datos maestros alfabéticos |
+
+Listado: `page` comienza en 1 (máximo 1000000), `limit` vale 20 por defecto
+(máximo 100). Filtros UUID: `authorId`, `publisherId`, `genreId`;
+`available` acepta únicamente `true` o `false`. `search` busca texto literal
+sin distinguir mayúsculas en título, autor y editorial (1 a 200 caracteres,
+espacios exteriores eliminados; % y _ no funcionan como comodines).
+
+Ejemplo: `/api/books?page=1&limit=10&available=true&sort=title:asc,price:desc`.
+`sort` acepta title, price, available, createdAt, updatedAt e id, cada campo una
+sola vez y dirección asc/desc. El orden predeterminado es createdAt:desc; se añade
+id:asc como desempate cuando no se especifica id. Campos o direcciones inválidos
+producen 400. PostgreSQL ejecuta los filtros, búsqueda, orden y paginación.
+Respuesta: `{ data: Book[], meta: { page, limit, total, totalPages } }`;
+un resultado vacío tiene totalPages:0. Conteo y página comparten una transacción
+RepeatableRead. El precio se conserva como cadena decimal con dos decimales.
+
+CREATE, UPDATE y DELETE registran Book y AuditLog en una sola transacción
+Serializable. Un fallo de auditoría revierte ambos; conflictos concurrentes
+responden 409 y requieren reintentar la solicitud. La auditoría incluye el usuario
+JWT, acción, entidad Book, ID y timestamp; metadata contiene solo los nombres de
+campos, sin contraseñas, tokens, valores de usuario ni archivos. No hay endpoint
+de auditoría ni registro automático de lecturas.
+
+Los errores JSON usan `{ statusCode, message, error }`; message puede ser una
+lista de validaciones. Los errores inesperados no revelan detalles internos.
+El interceptor agrega `X-Response-Time` (milisegundos hasta preparar la respuesta,
+no duración de transferencia del archivo), sin envolver JSON ni archivos.
+
+CSV reutiliza los filtros y search; no acepta paginación ni sort y exporta todos
+los resultados activos por ID. Se transmite por lotes de 500, UTF-8 con BOM,
+comas, campos entre comillas, comillas duplicadas y finales CRLF. Se antepone un
+apóstrofo a texto que pueda ejecutarse como fórmula en hojas de cálculo.
+Content-Type es `text/csv; charset=utf-8` y Content-Disposition es
+`attachment; filename="books.csv"`. Una falla durante la transferencia corta
+la conexión para evitar presentar un CSV incompleto como exitoso. Cada lote ve
+los datos vigentes: la exportación no garantiza una instantánea única frente a
+mutaciones concurrentes.
+
+Imágenes: JPEG, PNG o WebP, hasta 5 MiB y 20 millones de píxeles, una imagen fija
+por libro. Se comprueban MIME declarado, formato real y decodificación completa
+con sharp; se recodifica a WebP sin metadatos y se genera un UUID como nombre.
+SVG, contenido falso, MIME discordante, imágenes animadas y exceso de tamaño se
+rechazan (400 o 413). La dependencia sharp usa la versión corregida >=0.35.4.
+`UPLOADS_DIR` es opcional y vale `uploads`, relativo al directorio desde donde
+se ejecuta el backend; iniciar desde `backend/`. La carpeta está ignorada por Git.
+El futuro Docker Compose debe montar esa carpeta como volumen persistente; no se
+agregó infraestructura de fases posteriores. En producción conviene object storage.
+
+La URL guardada es `/api/uploads/<uuid>.webp`. La ruta pública sirve solamente
+archivos asociados a libros activos, con Content-Type image/webp, nosniff y
+Cache-Control no-store; no lista directorios ni acepta rutas arbitrarias. Esta
+ruta controlada mantiene la URL estática y permite excluir libros eliminados.
+POST/PATCH conservan la compatibilidad previa con imageUrl HTTP(S) externo o null.
+
+Base de datos y filesystem no comparten transacción: se compensa el archivo nuevo
+si falla la mutación y se retira el anterior sin referencias al cambiar imageUrl
+mediante upload o PATCH. Una caída del proceso o fallo de limpieza puede dejar un
+archivo huérfano. Soft delete conserva el archivo, aunque ya no es accesible.
+No hay proceso de purga automática
+en estas fases; revisar retención y espacio al desplegar.
+
+Las pruebas habituales incluyen filtros, paginación, orden, autenticación,
+errores, auditoría, CSV y archivos reales. `npm run test:db` comprueba también
+consultas, exportación, imágenes y rollback contra PostgreSQL de desarrollo.
+Los fixtures se revierten y sus archivos temporales se retiran. El test de creación
+fallida usa una transacción Prisma real; actualización/eliminación usan savepoints
+dentro de la transacción exterior de prueba para preservar la base de desarrollo.
+
+Verificación de este bloque: 227 pruebas habituales aprobadas; build y generación
+Prisma correctos. Cobertura: 99,53% de statements, 97,87% de ramas, 100% de funciones
+y 99,80% de líneas (excluye main y el cliente generado). Las 22 pruebas PostgreSQL
+aprueban. `git diff --check` no detecta errores. Persisten los avisos transitivos
+de Prisma y la deprecación de pg descritos anteriormente.
