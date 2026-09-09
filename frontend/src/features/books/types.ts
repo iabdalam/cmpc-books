@@ -1,4 +1,7 @@
 export interface Reference { id: string; name: string }
+export interface BookInput {
+  title: string; authorId: string; publisherId: string; genreId: string; price: number; available: boolean;
+}
 export interface Book {
   id: string; title: string; price: string; available: boolean; imageUrl: string | null;
   createdAt: string; updatedAt: string; author: Reference; publisher: Reference; genre: Reference;

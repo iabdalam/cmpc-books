@@ -18,6 +18,15 @@ describe('HTTP client', () => {
     expect(fetch.mock.calls[0][1].headers.has('Authorization')).toBe(false);
     expect(fetch.mock.calls[0][1].headers.get('Content-Type')).toBe('application/json');
   });
+  it('lets the browser generate multipart boundaries while preserving authentication', async () => {
+    const session = makeSession(); sessionStore.set(session);
+    const fetch = vi.fn().mockResolvedValue(response({})); vi.stubGlobal('fetch', fetch);
+    const body = new FormData(); body.append('file', new File(['image'], 'image.png', { type: 'image/png' }));
+    await http('/books/id/image', { method: 'POST', body, headers: { 'Content-Type': 'application/json' } });
+    expect(fetch.mock.calls[0][1].body).toBe(body);
+    expect(fetch.mock.calls[0][1].headers.has('Content-Type')).toBe(false);
+    expect(fetch.mock.calls[0][1].headers.get('Authorization')).toBe(`Bearer ${session.accessToken}`);
+  });
   it('does not request protected data without a session', async () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     await expect(http('/books')).rejects.toMatchObject({ status: 401 }); expect(fetch).not.toHaveBeenCalled();

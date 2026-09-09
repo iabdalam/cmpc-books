@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { ErrorMessage } from '../../shared/components/ErrorMessage';
 import { downloadFile } from '../../shared/api/download';
 import { getBooks, getMasterData, exportBooks } from './books-api';
@@ -8,6 +9,8 @@ import { SortControls } from './SortControls';
 import { BookTable } from './BookTable';
 
 export function BooksPage() {
+  const location = useLocation();
+  const [deleted, setDeleted] = useState(location.state?.deleted === true);
   const [query, setQuery] = useState(initialQuery);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortCriterion[]>([{ field: 'createdAt', direction: 'desc' }]);
@@ -65,7 +68,9 @@ export function BooksPage() {
 
   return <>
     <div className="page-heading"><div><p className="eyebrow">Inventario</p><h1>Libros</h1></div>
-      <button onClick={download} disabled={exporting || searchPending}>{exporting ? 'Exportando…' : 'Exportar CSV'}</button></div>
+      <div className="form-actions"><Link className="button-link" to="/books/new">Nuevo libro</Link>
+      <button onClick={download} disabled={exporting || searchPending}>{exporting ? 'Exportando…' : 'Exportar CSV'}</button></div></div>
+    {deleted && <p role="status" className="success">Libro eliminado correctamente.</p>}
     {exportError && <ErrorMessage>No se pudo descargar el archivo. Inténtalo nuevamente.</ErrorMessage>}
     <section className="card controls" aria-label="Consulta de libros">
       <label>Buscar libros<input type="search" placeholder="Título, autor o editorial" value={search} maxLength={200} onChange={(event) => setSearch(event.target.value)} /></label>
@@ -80,7 +85,7 @@ export function BooksPage() {
     <section className="card results" aria-label="Resultados" aria-busy={loading}>
       {loading ? <p className="state" role="status">Cargando libros…</p> : error
         ? <ErrorMessage retry={() => setRetry((value) => value + 1)}>No se pudieron cargar los libros.</ErrorMessage>
-        : page?.data.length ? <BookTable books={page.data} /> : <p className="state" role="status">No hay libros que coincidan con la búsqueda.</p>}
+        : page?.data.length ? <BookTable books={page.data} onDeleted={() => { setDeleted(true); setRetry((value) => value + 1); }} /> : <p className="state" role="status">No hay libros que coincidan con la búsqueda.</p>}
       <nav className="pagination" aria-label="Paginación">
         <label>Libros por página<select value={query.limit} onChange={(event) => setQuery((current) => ({ ...current, limit: Number(event.target.value), page: 1 }))}>
           {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}</select></label>

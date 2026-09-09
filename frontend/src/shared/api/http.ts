@@ -4,7 +4,7 @@ export class ApiError extends Error {
   constructor(public readonly status: number) { super('No se pudo completar la solicitud.'); }
 }
 
-const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
+export const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 type Options = RequestInit & { public?: boolean };
 
 export async function http(path: string, options: Options = {}): Promise<Response> {
@@ -16,7 +16,9 @@ export async function http(path: string, options: Options = {}): Promise<Respons
   }
   const headers = new Headers(init.headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  if (init.body) headers.set('Content-Type', 'application/json');
+  // El navegador debe generar el boundary de multipart al enviar FormData.
+  if (init.body instanceof FormData) headers.delete('Content-Type');
+  else if (init.body) headers.set('Content-Type', 'application/json');
   let response: Response;
   try { response = await fetch(`${baseUrl}${path}`, { ...init, headers }); }
   catch (error) {

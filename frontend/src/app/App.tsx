@@ -4,6 +4,8 @@ import { LoginPage } from '../features/auth/LoginPage';
 import { ProtectedRoute } from '../features/auth/ProtectedRoute';
 import { SESSION_KEY, sessionStore, tokenExpiry, useSession } from '../features/auth/session';
 import { BooksPage } from '../features/books/BooksPage';
+import { BookEditorPage } from '../features/books/BookEditorPage';
+import { BookDetailPage } from '../features/books/BookDetailPage';
 import { Layout } from './Layout';
 
 export function AppRoutes() {
@@ -19,10 +21,15 @@ export function AppRoutes() {
     const sync = (event: StorageEvent) => { if (event.key === SESSION_KEY || event.key === null) sessionStore.reload(); };
     window.addEventListener('storage', sync); return () => window.removeEventListener('storage', sync);
   }, []);
-  // Una sesión nueva descarta consultas y datos del usuario anterior al remontar BooksPage.
+  // Una sesión nueva descarta consultas y datos del usuario anterior al remontar el layout.
   return <Routes>
     <Route path="/login" element={<LoginPage />} />
-    <Route element={<ProtectedRoute />}><Route element={<Layout />}><Route path="/books" element={<BooksPage key={session?.accessToken} />} /></Route></Route>
+    <Route element={<ProtectedRoute />}><Route element={<Layout key={session?.accessToken} />}>
+      <Route path="/books" element={<BooksPage />} />
+      <Route path="/books/new" element={<BookEditorPage />} />
+      <Route path="/books/:id" element={<BookDetailPage />} />
+      <Route path="/books/:id/edit" element={<BookEditorPage />} />
+    </Route></Route>
     <Route path="*" element={<Navigate to={session ? '/books' : '/login'} replace />} />
   </Routes>;
 }
