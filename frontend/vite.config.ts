@@ -1,16 +1,23 @@
 import { defineConfig } from 'vitest/config';
+import { loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
-  plugins: [react()],
-  server: { port: 5173, strictPort: true },
-  test: {
-    environment: 'jsdom',
-    setupFiles: ['./src/test/setup.ts'],
-    coverage: {
-      provider: 'v8',
-      include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/main.tsx', 'src/test/**', 'src/**/*.test.tsx'],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const proxy = { '/api': { target: env.API_PROXY_TARGET || 'http://127.0.0.1:3000', changeOrigin: true } };
+  return {
+    plugins: [react()],
+    server: { port: 5173, strictPort: true, proxy },
+    preview: { proxy },
+    test: {
+      environment: 'jsdom',
+      setupFiles: ['./src/test/setup.ts'],
+      coverage: {
+        provider: 'v8',
+        include: ['src/**/*.{ts,tsx}'],
+        exclude: ['src/main.tsx', 'src/test/**', 'src/**/*.test.{ts,tsx}'],
+        thresholds: { statements: 80, branches: 80, functions: 80, lines: 80 },
+      },
     },
-  },
+  };
 });
