@@ -6,7 +6,69 @@ Full Stack technical challenge for a book inventory management application.
 
 Backend implementado hasta la Fase 9: PostgreSQL + Prisma, JWT, CRUD de libros,
 datos maestros de lectura, listado avanzado, errores uniformes, auditoría atómica,
-CSV e imágenes locales. El frontend conserva únicamente la base de la Fase 0.
+CSV e imágenes locales. El frontend incluye sesión JWT, listado, filtros,
+exportación, formularios, detalle, eliminación e imágenes de libros.
+
+## Stack completo con Docker
+
+Requiere Docker Desktop iniciado (contenedores Linux) y Docker Compose v2.
+Si no existe `backend/.env`, copiar `backend/.env.example`; completar
+`POSTGRES_PASSWORD`, `JWT_SECRET` (mínimo 32 bytes) y las credenciales de seed
+descritas más abajo. No sobrescribir un `.env` existente. No se necesitan
+Node.js ni dependencias instaladas en el host para ejecutar el stack.
+
+Desde la raíz:
+
+```sh
+docker compose --env-file backend/.env config --quiet
+docker compose --env-file backend/.env up -d --build --wait
+docker compose --env-file backend/.env run --rm --no-deps -e NODE_ENV=development migrate npm run prisma:seed
+```
+
+El seed es explícito e idempotente; usar el email y la contraseña elegidos en
+`SEED_DEMO_EMAIL` y `SEED_DEMO_PASSWORD` para iniciar sesión. No hay contraseñas
+predeterminadas. `migrate` aplica las migraciones versionadas y termina antes de
+arrancar el backend; el seed no se ejecuta automáticamente en producción.
+
+| Servicio | Acceso local | Persistencia |
+| --- | --- | --- |
+| frontend (Nginx) | http://localhost:5173 | Archivos estáticos dentro de la imagen |
+| backend (NestJS) | http://localhost:3000/api/health | `backend_uploads` en `/app/uploads` |
+| postgres (PostgreSQL 16) | localhost:5432 | `postgres_data` en `/var/lib/postgresql/data` |
+| migrate (temporal) | Sin puerto | Aplica migraciones sobre PostgreSQL |
+
+Los puertos se publican solo en loopback. `PORT` y `POSTGRES_PORT` permiten cambiar
+los puertos del host; los internos siguen siendo 3000 y 5432. Nginx usa 8080
+dentro del contenedor y publica 5173. Todos comparten la red `app` de Compose.
+Nginx resuelve rutas SPA como `/books/new` y reenvía `/api`, Swagger, CSV e imágenes
+al backend; el navegador no necesita CORS ni conocer nombres internos de Docker.
+`VITE_API_BASE_URL=/api` se fija al construir; `API_PROXY_TARGET` solo aplica a Vite.
+
+Compose construye `DATABASE_URL` al arrancar usando las variables `POSTGRES_*`,
+con caracteres especiales codificados y host `postgres`. La `DATABASE_URL` del
+`.env` sigue destinada a comandos y tests ejecutados desde el host. No se copian
+archivos `.env` ni uploads a las imágenes; los secretos se inyectan al arrancar.
+Los contenedores frontend y backend ejecutan procesos sin privilegios de root.
+El CLI Prisma y el seed permanecen en la imagen temporal de migraciones.
+
+Los healthchecks comprueban PostgreSQL, HTTP de NestJS y Nginx. El backend espera
+la base saludable y las migraciones completadas; el frontend espera al backend.
+El health HTTP de NestJS es de disponibilidad del proceso, no una consulta continua
+a PostgreSQL. Para comprobar la conexión real, iniciar sesión y consultar libros.
+
+```sh
+docker compose --env-file backend/.env ps -a
+docker compose --env-file backend/.env stop
+docker compose --env-file backend/.env up -d --wait
+```
+
+`stop` conserva ambos volúmenes. El volumen PostgreSQL preexistente mantiene su
+nombre; cambiar credenciales en `.env` no modifica una base ya inicializada.
+Los uploads del host en `backend/uploads` no se importan al volumen Docker
+automáticamente; si se reutiliza una base con imágenes locales, copiar esos
+archivos al volumen antes de consultar sus URLs. Respaldar base y uploads juntos.
+No ejecutar `down -v` si se quieren conservar los datos. Liberar los puertos de
+Vite/NestJS locales antes de levantar todo el stack.
 
 ## Requisitos e instalación
 
@@ -32,8 +94,8 @@ El backend verifica la conexión al arrancar y libera Prisma al cerrar.
 ## PostgreSQL de desarrollo (Fase 1)
 
 Se necesita Docker Desktop iniciado o una instancia propia de PostgreSQL.
-El Compose actual ejecuta **solo PostgreSQL 16**, con volumen persistente y puerto
-publicado únicamente en `127.0.0.1`. El stack completo corresponde a la Fase 14.
+Para trabajar con Node.js en el host, se puede levantar únicamente el servicio
+PostgreSQL 16 del mismo Compose, con su volumen persistente y puerto en loopback.
 
 Completar en `backend/.env`:
 
@@ -129,7 +191,7 @@ Login, health y Swagger permanecen públicos. La ruta `/api/protected-probe` exi
 exclusivamente en tests para comprobar el guard y el contexto del usuario, incluso
 contra PostgreSQL; no se registra en la aplicación desplegada.
 
-No hay refresh tokens, roles, OAuth ni frontend de autenticación.
+No hay refresh tokens, roles ni OAuth.
 
 ## API disponible
 
@@ -151,9 +213,9 @@ npm ci
 npm run dev
 ```
 
-Abrir http://localhost:5173 para ver la pantalla inicial. No realiza llamadas a la API
-ni necesita variables de entorno en esta fase. Las futuras variables `VITE_*`
-serán públicas y no deben contener secretos.
+Abrir http://localhost:5173 e iniciar sesión con el usuario demo. Vite reenvía
+`/api` a `http://127.0.0.1:3000`; `frontend/.env.example` permite ajustar ese destino
+para desarrollo. Las variables `VITE_*` son públicas y no deben contener secretos.
 
 ## Verificación
 
@@ -216,7 +278,8 @@ implementar cada fase. La comunicación HTTP se centralizará cuando sea necesar
 `authors`, `publishers` y `genres` exponen datos maestros de lectura. `audit`
 registra las mutaciones utilizando la misma transacción Prisma del libro.
 `common` contiene el filtro global de errores y el interceptor de tiempo de respuesta.
-El frontend sigue en Fase 0.
+El frontend organiza autenticación y libros por funcionalidad, con cliente HTTP
+y componentes compartidos.
 
 ### Modelo de persistencia
 
@@ -336,8 +399,7 @@ SVG, contenido falso, MIME discordante, imágenes animadas y exceso de tamaño s
 rechazan (400 o 413). La dependencia sharp usa la versión corregida >=0.35.4.
 `UPLOADS_DIR` es opcional y vale `uploads`, relativo al directorio desde donde
 se ejecuta el backend; iniciar desde `backend/`. La carpeta está ignorada por Git.
-El futuro Docker Compose debe montar esa carpeta como volumen persistente; no se
-agregó infraestructura de fases posteriores. En producción conviene object storage.
+Docker Compose monta `/app/uploads` en el volumen `backend_uploads`.
 
 La URL guardada es `/api/uploads/<uuid>.webp`. La ruta pública sirve solamente
 archivos asociados a libros activos, con Content-Type image/webp, nosniff y
